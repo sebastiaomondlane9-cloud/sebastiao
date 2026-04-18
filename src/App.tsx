@@ -5,7 +5,28 @@
 
 import { useState, useEffect, ChangeEvent, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { io, Socket } from "socket.io-client";
+import { initializeApp } from "firebase/app";
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  query, 
+  orderBy, 
+  onSnapshot, 
+  serverTimestamp, 
+  Timestamp,
+  doc,
+  setDoc,
+  getDoc,
+  getDocFromServer
+} from "firebase/firestore";
+import { 
+  getAuth, 
+  signInAnonymously, 
+  onAuthStateChanged,
+  User as FirebaseUser
+} from "firebase/auth";
+import firebaseConfig from "../firebase-applet-config.json";
 import { 
   Gamepad2, 
   Plus, 
@@ -57,11 +78,12 @@ interface Game {
 }
 
 interface Message {
-  id: number;
+  id: string;
   user: string;
   avatar: string;
   text: string;
-  timestamp: string;
+  timestamp: any;
+  senderId: string;
 }
 
 interface Post {
@@ -103,31 +125,23 @@ const INITIAL_POSTS: Post[] = [
   }
 ];
 
-const POPULAR_GAMES = [
-  { 
-    id: 1, 
-    name: "Free Fire", 
-    image: "https://picsum.photos/seed/freefire_new/400/300" 
-  },
-  { 
-    id: 2, 
-    name: "PUBG", 
-    image: "https://picsum.photos/seed/pubg_new/400/300" 
-  },
-  { 
-    id: 3, 
-    name: "Roblox", 
-    image: "https://picsum.photos/seed/roblox_new/400/300" 
-  },
-  { 
-    id: 4, 
-    name: "Call of Duty", 
-    image: "https://picsum.photos/seed/cod_new/400/300" 
-  },
+const POPULAR_GAMES: Game[] = [
+  { id: 1, title: "Clash of Clans", image: "https://picsum.photos/seed/coc/300/400", tags: ["Contas", "Clãs", "Gemas"] },
+  { id: 2, title: "Brawl Stars", image: "https://picsum.photos/seed/brawl/300/400", tags: ["Contas", "Gemas"] },
+  { id: 3, title: "Roblox", image: "https://picsum.photos/seed/roblox/300/400", tags: ["Contas", "Robux", "Itens"] },
+  { id: 4, title: "Raid: Shadow Legends", image: "https://picsum.photos/seed/raid/300/400", tags: ["Contas"] },
+  { id: 5, title: "PUBG Mobile", image: "https://picsum.photos/seed/pubgm/300/400", tags: ["Contas", "Itens", "UC"] },
+  { id: 6, title: "Mobile Legends", image: "https://picsum.photos/seed/mlbb/300/400", tags: ["Contas", "Diamantes"] },
 ];
+
+// --- Firebase Initialization ---
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const auth = getAuth(app);
 
 export default function App() {
   const [user, setUser] = useState<UserData | null>(null);
+  const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [avatar, setAvatar] = useState("");
@@ -188,7 +202,7 @@ export default function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
   const [chatInput, setChatInput] = useState("");
-  const socketRef = useRef<Socket | null>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // New Ad State
@@ -197,20 +211,73 @@ export default function App() {
   const [newImage, setNewImage] = useState("");
   const [newCategory, setNewCategory] = useState("Accounts");
 
-  const login = () => {
-    if (!email || !password) return;
-    const userData = { 
-      name: email.split('@')[0],
-      email, 
-      avatar: avatar || "https://picsum.photos/seed/user/100/100",
-      cover: cover || "https://picsum.photos/seed/cover/800/300"
+  // Firebase Auth sync
+  useEffect(() => {
+    // Test connection as required
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error: any) {
+        if(error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
     };
-    setUser(userData);
-    setActiveView("hub");
+    testConnection();
+
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setFbUser(firebaseUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleFirestoreError = (error: any, operationType: 'create' | 'update' | 'delete' | 'list' | 'get' | 'write', path: string | null = null) => {
+    if (error.code === 'permission-denied') {
+      const errorInfo = {
+        error: error.message,
+        operationType,
+        path,
+        authInfo: fbUser ? {
+          userId: fbUser.uid,
+          email: fbUser.email || '',
+          emailVerified: fbUser.emailVerified,
+          isAnonymous: fbUser.isAnonymous,
+          providerInfo: fbUser.providerData.map(p => ({
+            providerId: p.providerId,
+            displayName: p.displayName || '',
+            email: p.email || ''
+          }))
+        } : null
+      };
+      console.error("Firestore Security Error:", JSON.stringify(errorInfo, null, 2));
+    } else {
+      console.error(`Firestore ${operationType} Error:`, error);
+    }
+  };
+
+  const login = async () => {
+    if (!email || !password) return;
+    
+    try {
+      // For simplicity in this demo, we use anonymous auth to get a UID
+      // but associate it with the provided email for UI purposes
+      const cred = await signInAnonymously(auth);
+      const userData = { 
+        name: email.split('@')[0],
+        email, 
+        avatar: avatar || "https://picsum.photos/seed/user/100/100",
+        cover: cover || "https://picsum.photos/seed/cover/800/300"
+      };
+      setUser(userData);
+      setActiveView("hub");
+    } catch (error) {
+      console.error("Firebase Login Error:", error);
+    }
   };
 
   const logout = () => {
     setUser(null);
+    auth.signOut();
     localStorage.removeItem("mozgame_user");
     setActiveView("hub");
   };
@@ -320,39 +387,80 @@ export default function App() {
       }
     });
 
+  // Real-time Chat with Firestore
   useEffect(() => {
-    if (user) {
-      socketRef.current = io();
+    if (!user || !fbUser) return;
 
-      socketRef.current.on("chat:message", (msg: Message) => {
-        setChatMessages((prev) => [...prev, msg]);
+    // In a real app, you'd use a unique chatId between customer and seller
+    // For this global chat demo, we use a shared "global_hub"
+    const chatDocRef = doc(db, "chats", "global_hub");
+    const messagesColRef = collection(db, "chats", "global_hub", "messages");
+    const q = query(messagesColRef, orderBy("timestamp", "asc"));
+
+    // Ensure central chat document exists
+    getDoc(chatDocRef).then((snap) => {
+      if (!snap.exists()) {
+        setDoc(chatDocRef, {
+          chatId: "global_hub",
+          participants: [fbUser.uid],
+          lastMessage: "",
+          lastTimestamp: serverTimestamp()
+        });
+      }
+    });
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const messages: Message[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        messages.push({
+          id: doc.id,
+          user: data.user,
+          avatar: data.avatar,
+          text: data.text,
+          timestamp: data.timestamp,
+          senderId: data.senderId
+        });
       });
 
-      socketRef.current.on("post:new", (post: Post) => {
-        setPosts((prev) => [post, ...prev]);
-      });
+      // Handle unread notifications
+      if (!isChatOpen && messages.length > chatMessages.length && chatMessages.length > 0) {
+        setUnreadCount(prev => prev + (messages.length - chatMessages.length));
+      }
 
-      return () => {
-        socketRef.current?.disconnect();
-      };
+      setChatMessages(messages);
+    });
+
+    return () => unsubscribe();
+  }, [user, fbUser, isChatOpen, chatMessages.length]);
+
+  useEffect(() => {
+    if (isChatOpen) {
+      setUnreadCount(0);
     }
-  }, [user]);
+  }, [isChatOpen]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages, isChatOpen]);
 
-  const sendMessage = () => {
-    if (!chatInput.trim() || !user || !socketRef.current) return;
+  const sendMessage = async () => {
+    if (!chatInput.trim() || !user || !fbUser) return;
 
     const messageData = {
       user: user.name,
       avatar: user.avatar,
       text: chatInput,
+      senderId: fbUser.uid,
+      timestamp: serverTimestamp()
     };
 
-    socketRef.current.emit("chat:message", messageData);
-    setChatInput("");
+    try {
+      await addDoc(collection(db, "chats", "global_hub", "messages"), messageData);
+      setChatInput("");
+    } catch (error) {
+      handleFirestoreError(error, 'create', 'chats/global_hub/messages');
+    }
   };
 
   if (!user) {
@@ -630,35 +738,38 @@ export default function App() {
           <div className="absolute top-0 right-0 w-full md:w-1/2 h-full bg-gradient-to-l from-cyan-500/10 to-transparent pointer-events-none opacity-50 md:opacity-100" />
         </section>
 
-        {/* Jogos Populares Section (Dynamic List) */}
+        {/* Popular Games Grid */}
         <section className="space-y-6">
           <div className="flex items-center justify-between">
-            <h3 className="text-xl font-bold tracking-tight uppercase italic text-cyan-500">Jogos Populares</h3>
-            <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Lista Dinâmica</span>
+            <h3 className="text-xl font-bold tracking-tight">Jogos Populares</h3>
+            <button className="text-sm text-cyan-500 font-bold hover:underline">Ver Todos</button>
           </div>
-          
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {POPULAR_GAMES.map((game) => (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+            {POPULAR_GAMES.map(game => (
               <motion.div 
-                key={game.id} 
-                whileHover={{ scale: 1.05 }}
-                className="bg-[#141414] border border-[#222] p-2 rounded-2xl group cursor-pointer transition-all hover:border-cyan-500/50" 
+                key={game.id}
+                whileHover={{ y: -5 }}
+                className="group relative aspect-[3/4] rounded-2xl overflow-hidden border border-[#222] hover:border-cyan-500/50 transition-all cursor-pointer"
               >
-                <div className="relative aspect-video overflow-hidden rounded-xl">
-                  <img 
-                    src={game.image} 
-                    alt={game.name} 
-                    className="w-full h-full object-cover transition-transform duration-500" 
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = "https://via.placeholder.com/400x300?text=Imagem+Indisponível";
-                    }}
-                  />
+                <img src={game.image} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent" />
+                <div className="absolute bottom-0 left-0 p-4 space-y-2">
+                  <h4 className="font-bold text-sm leading-tight">{game.title}</h4>
+                  <div className="flex flex-wrap gap-1">
+                    {game.tags.map(tag => (
+                      <span key={tag} className="text-[8px] bg-white/10 backdrop-blur-md px-1.5 py-0.5 rounded uppercase font-bold text-gray-300">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-                <p className="text-center mt-3 text-sm font-bold tracking-tight text-gray-300 group-hover:text-cyan-500 transition-colors">
-                  {game.name}
-                </p>
               </motion.div>
             ))}
+          </div>
+          <div className="flex justify-center pt-4">
+            <button className="bg-[#141414] border border-[#222] px-8 py-3 rounded-xl text-sm font-bold text-cyan-500 hover:bg-[#1a1a1a] transition-all flex items-center gap-2">
+              Mostrar Mais Jogos Populares <Plus className="w-4 h-4" />
+            </button>
           </div>
         </section>
 
@@ -1483,15 +1594,17 @@ export default function App() {
                   </div>
                 ) : (
                   chatMessages.map((msg) => (
-                    <div key={msg.id} className={`flex gap-2 ${msg.user === user?.name ? "flex-row-reverse" : ""}`}>
+                    <div key={msg.id} className={`flex gap-2 ${msg.senderId === fbUser?.uid ? "flex-row-reverse" : ""}`}>
                       <img src={msg.avatar} className="w-6 h-6 rounded-full object-cover mt-1 shrink-0" />
-                      <div className={`max-w-[80%] space-y-1 ${msg.user === user?.name ? "items-end" : ""}`}>
+                      <div className={`max-w-[80%] space-y-1 ${msg.senderId === fbUser?.uid ? "items-end" : ""}`}>
                         <div className="flex items-center gap-2">
                           <span className="text-[10px] font-bold text-gray-500">{msg.user}</span>
-                          <span className="text-[8px] text-gray-600 font-mono">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          <span className="text-[8px] text-gray-600 font-mono">
+                            {msg.timestamp instanceof Timestamp ? msg.timestamp.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "..."}
+                          </span>
                         </div>
                         <div className={`p-3 rounded-2xl text-sm ${
-                          msg.user === user?.name 
+                          msg.senderId === fbUser?.uid 
                           ? "bg-cyan-500 text-black rounded-tr-none" 
                           : "bg-[#1a1a1a] border border-[#222] text-gray-300 rounded-tl-none shadow-sm"
                         }`}>
@@ -1535,9 +1648,9 @@ export default function App() {
               className="w-14 h-14 rounded-full bg-cyan-500 text-black flex items-center justify-center shadow-2xl relative transition-transform"
             >
               <MessageSquare className="w-6 h-6" />
-              {chatMessages.length > 0 && (
+              {unreadCount > 0 && (
                 <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center border-2 border-[#0a0a0a]">
-                  {chatMessages.length > 9 ? "9+" : chatMessages.length}
+                  {unreadCount > 9 ? "9+" : unreadCount}
                 </span>
               )}
             </motion.button>

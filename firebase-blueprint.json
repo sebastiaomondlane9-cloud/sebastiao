@@ -1,0 +1,37 @@
+{
+  "entities": {
+    "Chat": {
+      "title": "Chat",
+      "description": "A conversation between a customer and a seller.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string", "description": "Unique ID formed by customer_seller" },
+        "participants": { "type": "array", "items": { "type": "string" }, "description": "List of user IDs involved in the chat" },
+        "lastMessage": { "type": "string", "description": "Snippet of the last message sent" },
+        "lastTimestamp": { "type": "string", "format": "date-time", "description": "Timestamp of the last message" }
+      },
+      "required": ["chatId", "participants"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A single message in a chat.",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string", "description": "UID of the user who sent the message" },
+        "text": { "type": "string", "description": "Content of the message" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the message was sent" }
+      },
+      "required": ["senderId", "text", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "Top-level collection for chat metadata."
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Subcollection for actual messages."
+    }
+  }
+}
